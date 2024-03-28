@@ -21,7 +21,7 @@ import java.util.{Map => JMap}
 import scala.jdk.CollectionConverters._
 import scala.util.Random
 
-import org.apache.spark.SparkConf
+import org.apache.spark.{SparkConf, TaskContext, TaskFailedReason}
 import org.apache.spark.api.plugin.{DriverPlugin, ExecutorPlugin, PluginContext, SparkPlugin}
 import org.apache.spark.internal.Logging
 
@@ -42,6 +42,7 @@ class JVMProfilerExecutorPlugin extends ExecutorPlugin with Logging {
   private var pluginCtx: PluginContext = _
   private var profiler: ExecutorJVMProfiler = _
   private var codeProfilingEnabled: Boolean = _
+  private var codeProfilingStageIsolated: Boolean = _
   private var codeProfilingFraction: Double = _
   private val rand: Random = new Random(System.currentTimeMillis())
 
@@ -49,15 +50,40 @@ class JVMProfilerExecutorPlugin extends ExecutorPlugin with Logging {
     pluginCtx = ctx
     sparkConf = ctx.conf()
     codeProfilingEnabled = sparkConf.get(EXECUTOR_PROFILING_ENABLED)
-    if (codeProfilingEnabled) {
+    codeProfilingStageIsolated = sparkConf.get(EXECUTOR_PROFILING_STAGE_ISOLATED)
+    if (codeProfilingEnabled ) {
       codeProfilingFraction = sparkConf.get(EXECUTOR_PROFILING_FRACTION)
       if (rand.nextInt(100) * 0.01 < codeProfilingFraction) {
         logInfo(s"Executor id ${pluginCtx.executorID()} selected for JVM code profiling")
         profiler = new ExecutorJVMProfiler(sparkConf, pluginCtx.executorID())
-        profiler.start()
+        if (!codeProfilingStageIsolated) {
+          profiler.start()
+        }
       }
     }
     Map.empty[String, String].asJava
+  }
+
+  override def onTaskStart(): Unit = {
+    if (codeProfilingStageIsolated) {
+      val task = TaskContext.get()
+      if (task != null) {
+        val stageId = task.stageId();
+        profiler.reStart(stageId)
+      }
+    }
+  }
+
+  override def onTaskFailed(failureReason: TaskFailedReason): Unit = {
+    if (codeProfilingStageIsolated) {
+      onTaskSucceeded()
+    }
+  }
+
+  override def onTaskSucceeded(): Unit = {
+    if (codeProfilingStageIsolated) {
+      profiler.stop()
+    }
   }
 
   override def shutdown(): Unit = {

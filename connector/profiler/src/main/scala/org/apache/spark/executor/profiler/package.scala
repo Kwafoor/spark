@@ -29,6 +29,13 @@ package object profiler {
       .booleanConf
       .createWithDefault(false)
 
+  private[profiler] val EXECUTOR_PROFILING_STAGE_ISOLATED =
+    ConfigBuilder("spark.executor.profiling.stage.isolated")
+      .doc("Turn on code profiling task isolated in executor.")
+      .version("4.0.0")
+      .booleanConf
+      .createWithDefault(false)
+
   private[profiler] val EXECUTOR_PROFILING_DFS_DIR =
     ConfigBuilder("spark.executor.profiling.dfsDir")
       .doc("HDFS compatible file-system path to where the profiler will write output jfr files.")

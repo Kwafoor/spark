@@ -16,7 +16,7 @@
  */
 package org.apache.spark.executor.profiler
 
-import java.io.{BufferedInputStream, FileInputStream, InputStream, IOException}
+import java.io.{BufferedInputStream, File, FileInputStream, InputStream, IOException}
 import java.net.URI
 import java.util.concurrent.{ScheduledExecutorService, TimeUnit}
 
@@ -34,12 +34,13 @@ import org.apache.spark.util.ThreadUtils
  */
 private[spark] class ExecutorJVMProfiler(conf: SparkConf, executorId: String) extends Logging {
 
-  private var running = false
-  private val enableProfiler = conf.get(EXECUTOR_PROFILING_ENABLED)
+  @volatile private var running = false
+  @volatile private var stageId: Int = _
   private val profilerOptions = conf.get(EXECUTOR_PROFILING_OPTIONS)
   private val profilerDfsDir = conf.get(EXECUTOR_PROFILING_DFS_DIR)
   private val profilerLocalDir = conf.get(EXECUTOR_PROFILING_LOCAL_DIR)
   private val writeInterval = conf.get(EXECUTOR_PROFILING_WRITE_INTERVAL)
+  private val codeProfilingStageIsolated = conf.get(EXECUTOR_PROFILING_STAGE_ISOLATED)
 
   private val startcmd = s"start,$profilerOptions,file=$profilerLocalDir/profile.jfr"
   private val stopcmd = s"stop,$profilerOptions,file=$profilerLocalDir/profile.jfr"
@@ -55,7 +56,7 @@ private[spark] class ExecutorJVMProfiler(conf: SparkConf, executorId: String) ex
 
   val profiler: Option[AsyncProfiler] = {
     Option(
-      if (enableProfiler && AsyncProfilerLoader.isSupported) AsyncProfilerLoader.load() else null
+      if (AsyncProfilerLoader.isSupported) AsyncProfilerLoader.load() else null
     )
   }
 
@@ -73,6 +74,17 @@ private[spark] class ExecutorJVMProfiler(conf: SparkConf, executorId: String) ex
           logError("JVM profiling aborted. Exception occurred in profiler native code: ", e)
         case e: Exception => logWarning("Executor JVM profiling aborted due to exception: ", e)
       }
+    }
+  }
+
+  def reStart(id: Int): Unit = {
+    if (!running && id != this.stageId) {
+      val tempFile = new File(s"$profilerLocalDir/profile.jfr")
+      if (tempFile.exists()) {
+        tempFile.delete()
+      }
+      this.stageId = id;
+      start()
     }
   }
 
@@ -99,8 +111,11 @@ private[spark] class ExecutorJVMProfiler(conf: SparkConf, executorId: String) ex
       val appName = conf.get("spark.app.name").replace(" ", "-")
       val profilerOutputDirname = profilerDfsDir.get
 
-      val profileOutputFile =
+      val profileOutputFile = if (codeProfilingStageIsolated) {
+        s"$profilerOutputDirname/$applicationId/profile-$appName-exec-$executorId-$stageId.jfr"
+      } else {
         s"$profilerOutputDirname/$applicationId/profile-$appName-exec-$executorId.jfr"
+      }
       val fs = FileSystem.get(new URI(profileOutputFile), config);
       val filenamePath = new Path(profileOutputFile)
       outputStream = fs.create(filenamePath)
